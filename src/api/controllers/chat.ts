@@ -632,10 +632,12 @@ async function receiveStream(model: string, stream: any, refConvId?: string): Pr
  */
 function createTransStream(model: string, stream: any, refConvId: string, endCallback?: Function) {
   let thinking = false;
+  let start = false;
   const isSearchModel = model.includes('search');
   const isThinkingModel = model.includes('think') || model.includes('r1');
   const isSilentModel = model.includes('silent');
-  const isFoldModel = model.includes('fold');
+  // const isFoldModel = model.includes('fold');
+  const isFoldModel = true;
   logger.info(`模型: ${model}, 是否思考: ${isThinkingModel}, 是否联网搜索: ${isSearchModel}, 是否静默思考: ${isSilentModel}, 是否折叠思考: ${isFoldModel}`);
   // 消息创建时间
   const created = util.unixTimestamp();
@@ -664,104 +666,63 @@ function createTransStream(model: string, stream: any, refConvId: string, endCal
       const result = _.attempt(() => JSON.parse(event.data));
       if (_.isError(result))
         throw new Error(`Stream response invalid: ${event.data}`);
-      if (!result.choices || !result.choices[0] || !result.choices[0].delta)
+
+      if (!result.v || typeof result.v !== "string") {
+
+        if (start && result?.v?.v === "FINISHED") {
+          transStream.write(
+            `data: ${JSON.stringify({
+              id: `${refConvId}@${result.message_id}`,
+              model: result.model,
+              object: "chat.completion.chunk",
+              choices: [
+                {
+                  index: 0,
+                  delta: { role: "assistant", content: "" },
+                  finish_reason: "stop",
+                },
+              ],
+              created,
+            })}\n\n`
+          );
+          !transStream.closed && transStream.end("data: [DONE]\n\n");
+          endCallback && endCallback();
+        }
         return;
+      }
+
+      start = true;
       result.model = model;
-      if (result.choices[0].delta.type === "search_result" && !isSilentModel) {
-        const searchResults = result.choices[0]?.delta?.search_results || [];
-        if (searchResults.length > 0) {
-          const refContent = searchResults.map(item => `检索 ${item.title} - ${item.url}`).join('\n') + '\n\n';
-          transStream.write(`data: ${JSON.stringify({
-            id: `${refConvId}@${result.message_id}`,
-            model: result.model,
-            object: "chat.completion.chunk",
-            choices: [
-              {
-                index: 0,
-                delta: { role: "assistant", content: refContent },
-                finish_reason: null,
-              },
-            ],
-          })}\n\n`);
-        }
-        return;
-      }
-      if (isFoldModel && result.choices[0].delta.type === "thinking") {
-        if (!thinking && isThinkingModel && !isSilentModel) {
-          thinking = true;
-          transStream.write(`data: ${JSON.stringify({
-            id: `${refConvId}@${result.message_id}`,
-            model: result.model,
-            object: "chat.completion.chunk",
-            choices: [
-              {
-                index: 0,
-                delta: { role: "assistant", content: isFoldModel ? "<details><summary>思考过程</summary><pre>" : "[思考开始]\n" },
-                finish_reason: null,
-              },
-            ],
-            created,
-          })}\n\n`);
-        }
-        if (isSilentModel)
-          return;
-      }
-      else if (isFoldModel && thinking && isThinkingModel && !isSilentModel) {
-        thinking = false;
-        transStream.write(`data: ${JSON.stringify({
+
+      // 思考开始
+      if (result?.p === "response/thinking_content") thinking = true;
+
+      // 思考结束
+      if (result?.p === "response/content" && thinking) thinking = false;
+
+      // 提取内容
+      const deltaContent = result.v.replace(/\[citation:\d+\]/g, "");
+
+      const delta = thinking
+        ? { role: "assistant", reasoning_content: deltaContent }
+        : { role: "assistant", content: deltaContent };
+
+      transStream.write(
+        `data: ${JSON.stringify({
           id: `${refConvId}@${result.message_id}`,
           model: result.model,
           object: "chat.completion.chunk",
           choices: [
             {
               index: 0,
-              delta: { role: "assistant", content: isFoldModel ? "</pre></details>" : "\n\n[思考结束]\n" },
+              delta,
               finish_reason: null,
             },
           ],
           created,
-        })}\n\n`);
-      }
+        })}\n\n`
+      );
 
-      if (!result.choices[0].delta.content)
-        return;
-
-      const deltaContent = result.choices[0].delta.content.replace(/\[citation:\d+\]/g, '');
-      const delta = result.choices[0].delta.type === "thinking" && !isFoldModel
-          ? { role: "assistant", reasoning_content: deltaContent }
-          : { role: "assistant", content: deltaContent };
-
-      transStream.write(`data: ${JSON.stringify({
-        id: `${refConvId}@${result.message_id}`,
-        model: result.model,
-        object: "chat.completion.chunk",
-        choices: [
-          {
-            index: 0,
-            delta,
-            finish_reason: null,
-          },
-        ],
-        created,
-      })}\n\n`);
-
-      if (result.choices && result.choices[0] && result.choices[0].finish_reason === "stop") {
-        transStream.write(`data: ${JSON.stringify({
-          id: `${refConvId}@${result.message_id}`,
-          model: result.model,
-          object: "chat.completion.chunk",
-          choices: [
-            {
-              index: 0,
-              delta: { role: "assistant", content: "" },
-              finish_reason: "stop"
-            },
-          ],
-          created,
-        })}\n\n`);
-        !transStream.closed && transStream.end("data: [DONE]\n\n");
-        endCallback && endCallback();
-      }
     } catch (err) {
       logger.error(err);
       !transStream.closed && transStream.end("data: [DONE]\n\n");
