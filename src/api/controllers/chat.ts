@@ -694,6 +694,11 @@ function createTransStream(model: string, stream: any, refConvId: string, endCal
       start = true;
       result.model = model;
 
+      // 如果结束了就提前返回
+      if (result?.p === "response/status") {
+        return;
+      }
+
       // 思考开始
       if (result?.p === "response/thinking_content") thinking = true;
 
