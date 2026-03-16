@@ -1319,7 +1319,7 @@ async function getThinkingQuota(refreshToken: string) {
 async function fetchAppVersion(): Promise<string> {
   try {
     logger.info('自动获取版本号');
-    const response = await axios.get('https://chat.deepseek.com/version.txt', {
+    const response = await axios.get('https://raw.githubusercontent.com/xiaoY233/DeepSeek-Free-API/master/version.txt', {
       timeout: 5000,
       validateStatus: () => true,
       headers: {
