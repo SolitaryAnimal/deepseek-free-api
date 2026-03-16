@@ -8,6 +8,7 @@ import { createParser } from "eventsource-parser";
 import { DeepSeekHash } from "@/lib/challenge.ts";
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
+import StreamChecker from "@/streamChecker";
 
 // 模型名称
 const MODEL_NAME = "deepseek-chat";
@@ -641,6 +642,13 @@ function createTransStream(model: string, stream: any, refConvId: string, endCal
   logger.info(`模型: ${model}, 是否思考: ${isThinkingModel}, 是否联网搜索: ${isSearchModel}, 是否静默思考: ${isSilentModel}, 是否折叠思考: ${isFoldModel}`);
   // 消息创建时间
   const created = util.unixTimestamp();
+
+  // 工具调用
+  let isFunctionCalled = false;
+  let functionCallResult = "";
+  let startStreamChecker = new StreamChecker("```functioncall");
+  let endStreamChecker = new StreamChecker("```");
+
   // 创建转换流
   const transStream = new PassThrough();
   !transStream.closed &&
@@ -705,6 +713,126 @@ function createTransStream(model: string, stream: any, refConvId: string, endCal
       // 思考结束
       if (result?.p === "response/content" && thinking) thinking = false;
 
+      if (!thinking) {
+        if (isFunctionCalled) {
+          const { status, before, after, other } = endStreamChecker.processLine(
+            result.v,
+          );
+          functionCallResult += before + after + other;
+
+          if (status) {
+            logger.info(`函数调用结束: ${functionCallResult + before}`);
+            isFunctionCalled = false;
+
+            try {
+            // 解析函数
+            const command = JSON.parse(functionCallResult);
+            const functionName = command.name;
+            const functionArgs = JSON.stringify(command.arguments);
+
+            transStream.write(
+              `data: ${JSON.stringify({
+                id: `${refConvId}@${result.message_id}`,
+                model: result.model,
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        {
+                          index: 0,
+                          type: "function",
+                          function: {
+                            name: functionName,
+                            arguments: functionArgs,
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+                created,
+              })}\n\n`,
+            );
+
+            // 结束, 要求进行函数调用
+            transStream.write(
+              `data: ${JSON.stringify({
+                id: `${refConvId}@${result.message_id}`,
+                model: result.model,
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    finish_reason: "tool_calls",
+                    delta: { role: "assistant", content: "" },
+                  },
+                ],
+                created,
+              })}\n\n`,
+            );
+          }catch(e){
+            logger.warn("函数解析失败");
+
+            // 故意发起错误调用让客户端处理
+            transStream.write(
+              `data: ${JSON.stringify({
+                id: `${refConvId}@${result.message_id}`,
+                model: result.model,
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        {
+                          index: 0,
+                          type: "function",
+                          function: functionCallResult,
+                        },
+                      ],
+                    },
+                  },
+                ],
+                created,
+              })}\n\n`,
+            );
+
+            // 结束, 要求进行函数调用
+            transStream.write(
+              `data: ${JSON.stringify({
+                id: `${refConvId}@${result.message_id}`,
+                model: result.model,
+                object: "chat.completion.chunk",
+                choices: [
+                  {
+                    index: 0,
+                    finish_reason: "tool_calls",
+                    delta: { role: "assistant", content: "" },
+                  },
+                ],
+                created,
+              })}\n\n`,
+            );
+          }
+        }
+          return;
+        } else {
+          const { status, before, after, other } =
+            startStreamChecker.processLine(result.v);
+
+          result.v = before + after + other;
+
+          if (status) {
+            logger.info("函数调用开始");
+            functionCallResult = "";
+            isFunctionCalled = true;
+            return;
+          }
+        }
+      }
+
       // 提取内容
       const deltaContent = result.v.replace(/\[citation:\d+\]/g, "");
 
@@ -725,27 +853,26 @@ function createTransStream(model: string, stream: any, refConvId: string, endCal
             },
           ],
           created,
-        })}\n\n`
+        })}\n\n`,
       );
-
+      
     } catch (err) {
       logger.error(err);
       !transStream.closed && transStream.end("data: [DONE]\n\n");
+      isFunctionCalled = false;
     }
   });
   // 将流数据喂给SSE转换器
   stream.on("data", (buffer) => parser.feed(buffer.toString()));
-  stream.once(
-    "error",
-    () => !transStream.closed && transStream.end("data: [DONE]\n\n")
-  );
-  stream.once(
-    "close",
-    () => {
+  stream.once("error", () => {
+    isFunctionCalled = false;
+    !transStream.closed && transStream.end("data: [DONE]\n\n");
+  });
+  stream.once("close", () => {
+    isFunctionCalled = false;
       !transStream.closed && transStream.end("data: [DONE]\n\n");
       endCallback && endCallback();
-    }
-  );
+  });
   return transStream;
 }
 
