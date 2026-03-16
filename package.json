@@ -4,6 +4,7 @@
   "description": "DeepSeek Free API Server",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
+  "type": "module",
   "types": "dist/index.d.ts",
   "directories": {
     "dist": "dist"
