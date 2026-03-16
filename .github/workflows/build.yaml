@@ -1,0 +1,64 @@
+name: Build and Push to GHCR
+
+on:
+  #push:
+    #branches: [ "master", "main" ] # 推送到主分支时触发
+    #tags: [ 'v*' ] # 推送版本标签（如 v1.0.0）时触发
+  workflow_dispatch: # 支持手动触发
+
+env:
+  REGISTRY: ghcr.io
+  # 镜像名称会自动变为：ghcr.io/你的用户名/仓库名
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # 必须有推送镜像的权限
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 1. 设置 QEMU (支持多平台构建如 arm64)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 2. 设置 Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 3. 登录到 GitHub Container Registry
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 4. 自动提取元数据（标签、版本）
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # 策略：如果是 tag 则用 tag 名，如果是分支则用 latest
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=branch
+            type=sha,format=short
+
+      # 5. 构建并推送
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          # 使用 GitHub 缓存加快后续构建速度
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
