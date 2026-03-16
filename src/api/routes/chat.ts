@@ -39,11 +39,11 @@ export default {
 
             if ('tools' in request.body) {
                 const tools = request.body.tools;
-                const ts = `你可以通过指定格式发起函数调用,调用应该用json放在对话末尾的functioncall的md代码块中,例如:
+                const ts = `\n<｜System｜>你可以通过指定格式发起工具调用,所有对计算机的操作都需要通过工具调用实现,调用应该用json放在对话末尾的functioncall的md代码块中,例如:
 \`\`\`functioncall
 {"name":"send_email","arguments":[{"to":"user@example.com"},{"subject":"会议邀请"}]}
 \`\`\`
-一次回复中你只能进行一次函数调用,必须严格按照函数调用格式,参数名称和参数必须用"包裹,并且内部内容需要反转译`;
+一次回复中你只能进行一次函数调用,必须严格按照函数调用格式,参数名称和参数必须用"包裹,并且内部内容需要反转译<｜System｜>`;
                 let toolList = [];
                 tools.forEach(element => {
                     try {
@@ -56,7 +56,16 @@ export default {
                         logger.warn(`工具提示词格式化失败: ${element}`)
                     }
                 });
-                messages[0].content += "\n" + `你可以调用的函数列表如下\n${toolList.join("\n")}` + "\n" + ts;
+                messages[0].content += "\n" + `你可以调用的函数列表如下\n${toolList.join("\n")}`;
+                messages.splice(-1, 0, {
+                    role: 'system',
+                    content: [
+                        {
+                            type: 'text',
+                            text: ts
+                        }
+                    ]
+                })
             }
 
             model = model.toLowerCase();
